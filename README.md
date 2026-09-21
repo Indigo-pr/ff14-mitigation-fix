@@ -125,10 +125,28 @@ investigations/                 調査・検算の作業場（運用ルールは
 毎回キーを打ち直さなくて済むよう、`.env` に置いて読み込める。
 
 ```powershell
-Copy-Item .env.example .env    # 初回だけ。値を書き込む
+Copy-Item .env.example .env    # 初回だけ。client_id / client_secret を書き込む
 . .\tools\load-env.ps1         # 先頭の "." が必須。無いと効かない
-python tools/fflogs_unmitigated.py 9
 ```
+
+レポートは**第1引数で渡す**。本体ツールと同じURLをそのまま貼れる。
+
+```powershell
+# 戦闘一覧を見る
+python tools/fflogs_unmitigated.py "https://www.fflogs.com/reports/xxxx"
+
+# URL に #fight=N があればその戦闘を CSV 出力
+python tools/fflogs_unmitigated.py "https://www.fflogs.com/reports/xxxx#fight=9"
+
+# コード直指定。fight は複数可、all で全戦闘
+python tools/fflogs_unmitigated.py xxxx 12 13 14
+python tools/fflogs_unmitigated.py xxxx all
+```
+
+> **URL は必ずクォートで囲むこと。** シェルは `#` 以降をコメントとみなすため、
+> 囲まないと `#fight=N` が消えて戦闘一覧が出るだけになる。
+
+`FFLOGS_REPORT` を `.env` に入れておけば第1引数は省略できる。
 
 `.env` は `.gitignore` 済み。**Apps Script 本体はこれを使わない**（あちらはスクリプトプロパティ）。
 

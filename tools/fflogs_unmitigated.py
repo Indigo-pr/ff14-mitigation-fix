@@ -23,14 +23,27 @@ FFLogs v2 API から「軽減前ダメージ(unmitigatedAmount)」付きの被�
     python3 fflogs_unmitigated.py
 
 引数:
-    python fflogs_unmitigated.py                 # 戦闘一覧を表示するだけ
-    python fflogs_unmitigated.py 12              # fight 12 の被弾を CSV 出力
-    python fflogs_unmitigated.py 12 13 14        # 複数まとめて
-    python fflogs_unmitigated.py all             # 全戦闘
+    第1引数にレポートの URL かコードを渡す。以降が fight の指定。
+
+    python fflogs_unmitigated.py "https://www.fflogs.com/reports/xxxx"
+        → その戦闘一覧を表示するだけ
+
+    python fflogs_unmitigated.py "https://www.fflogs.com/reports/xxxx#fight=9"
+        → URL に #fight=N があればその戦闘を CSV 出力
+
+    python fflogs_unmitigated.py xxxx 12 13 14   # fight を複数指定
+    python fflogs_unmitigated.py xxxx all        # 全戦闘
+
+    ※ URL は必ずクォートで囲むこと。
+      シェルは # 以降をコメントとみなすため、囲まないと #fight=N が消える。
+
+    環境変数 FFLOGS_REPORT にレポートを入れておけば第1引数は省略できる。
+    その場合は従来どおり `python fflogs_unmitigated.py 12` で動く。
 """
 
 import csv
 import os
+import re
 import sys
 import collections
 
@@ -39,12 +52,48 @@ import requests
 TOKEN_URL = "https://www.fflogs.com/oauth/token"
 API_URL = "https://www.fflogs.com/api/v2/client"
 
-REPORT_CODE = os.environ.get("FFLOGS_REPORT", "vadZrjNytXH3wD2R")
 CLIENT_ID = os.environ.get("FFLOGS_CLIENT_ID")
 CLIENT_SECRET = os.environ.get("FFLOGS_CLIENT_SECRET")
 
 # FFLogs ではステータス(バフ/デバフ)の ID が 1,000,000 + ステータスID で表現される
 STATUS_OFFSET = 1_000_000
+
+# レポートコードは 16 文字が標準だが、念のため下限だけ見る
+_REPORT_IN_URL = re.compile(r"reports/([A-Za-z0-9]{10,})")
+_BARE_CODE = re.compile(r"^[A-Za-z0-9]{10,}$")
+_FIGHT_IN_URL = re.compile(r"fight=(\d+)")
+
+USAGE = """レポートを指定してください。
+
+  python tools/fflogs_unmitigated.py "https://www.fflogs.com/reports/xxxx#fight=9"
+  python tools/fflogs_unmitigated.py xxxx 12 13 14
+  python tools/fflogs_unmitigated.py xxxx all
+
+  ※ URL は必ずクォートで囲むこと。囲まないとシェルが # 以降を捨てます。
+
+  環境変数 FFLOGS_REPORT に入れておけば第1引数は省略できます。"""
+
+
+def parse_report_input(s):
+    """URL またはレポートコードから (code, fight) を取り出す。
+
+    Apps Script 側の mfParseReportInput と同じ挙動にしてある。
+    同じ URL を両方のツールにそのまま貼れるようにするため。
+    読み取れなければ code は None を返す。
+    """
+    s = (s or "").strip()
+
+    code = None
+    m = _REPORT_IN_URL.search(s)
+    if m:
+        code = m.group(1)
+    elif _BARE_CODE.match(s):
+        code = s
+
+    f = _FIGHT_IN_URL.search(s)
+    fight = int(f.group(1)) if f else None
+
+    return code, fight
 
 
 def get_token():
@@ -122,14 +171,14 @@ query($code: String!, $fight: Int!, $start: Float!, $end: Float!) {
 """
 
 
-def fetch_events(token, fight):
+def fetch_events(token, report_code, fight):
     """1戦闘ぶんの被弾イベントをページングしながら全部取る。"""
     out = []
     cursor = float(fight["startTime"])
     end = float(fight["endTime"])
     while cursor is not None and cursor < end:
         data = gql(token, EVENTS_QUERY, {
-            "code": REPORT_CODE, "fight": fight["id"],
+            "code": report_code, "fight": fight["id"],
             "start": cursor, "end": end,
         })
         page = data["reportData"]["report"]["events"]
@@ -141,15 +190,46 @@ def fetch_events(token, fight):
     return out
 
 
+def resolve_report(argv):
+    """引数と環境変数からレポートコードと fight 指定を決める。
+
+    返り値は (report_code, rest, fight_from_url)。
+    rest は fight 指定として残った引数。
+
+    第1引数がレポートとして読めなければ消費しない。
+    これで FFLOGS_REPORT を設定済みの場合の
+    `python fflogs_unmitigated.py 12` が従来どおり動く。
+    """
+    report_code, fight_from_url = (None, None)
+    rest = list(argv)
+
+    if rest:
+        code, fight = parse_report_input(rest[0])
+        if code:
+            report_code, fight_from_url = code, fight
+            rest = rest[1:]
+
+    if not report_code:
+        report_code, env_fight = parse_report_input(os.environ.get("FFLOGS_REPORT", ""))
+        if fight_from_url is None:
+            fight_from_url = env_fight
+
+    return report_code, rest, fight_from_url
+
+
 def main():
+    report_code, args, fight_from_url = resolve_report(sys.argv[1:])
+    if not report_code:
+        sys.exit(USAGE)
+
     token = get_token()
-    data = gql(token, REPORT_QUERY, {"code": REPORT_CODE})["reportData"]["report"]
+    data = gql(token, REPORT_QUERY, {"code": report_code})["reportData"]["report"]
 
     actors = {a["id"]: a["name"] for a in data["masterData"]["actors"]}
     abilities = {a["gameID"]: a["name"] for a in data["masterData"]["abilities"]}
     fights = data["fights"]
 
-    print(f'レポート: {data["title"]}  ({REPORT_CODE})\n')
+    print(f'レポート: {data["title"]}  ({report_code})\n')
     print(f'{"id":>4}  {"秒":>7}  {"結果":<6} 戦闘名')
     print("-" * 70)
     for f in fights:
@@ -157,10 +237,15 @@ def main():
         res = "撃破" if f["kill"] else (f'{f.get("fightPercentage", "")}%' if f.get("fightPercentage") is not None else "全滅")
         print(f'{f["id"]:>4}  {dur:>7.1f}  {res:<6} {f["name"]}')
 
-    args = [a for a in sys.argv[1:]]
+    # URL に #fight=N が付いていれば、それを fight 指定として使う
+    if not args and fight_from_url is not None:
+        args = [str(fight_from_url)]
+
     if not args:
-        print("\n↑ 出力したい fight の id を引数に渡してください（例: python fflogs_unmitigated.py 12）")
-        print("   全部なら: python fflogs_unmitigated.py all")
+        print("\n↑ 出力したい fight の id を引数に渡してください")
+        print(f'   例: python fflogs_unmitigated.py {report_code} 12')
+        print(f'   全部なら: python fflogs_unmitigated.py {report_code} all')
+        print("   URL に #fight=N を付けても指定できます（要クォート）")
         return
 
     if args == ["all"]:
@@ -176,7 +261,7 @@ def main():
     rows = []
     for f in targets:
         print(f'\n取得中: fight {f["id"]} ({f["name"]}) ...', flush=True)
-        events = fetch_events(token, f)
+        events = fetch_events(token, report_code, f)
         print(f"  {len(events)} 件")
         for e in events:
             if e.get("type") not in ("damage", "calculateddamage"):
