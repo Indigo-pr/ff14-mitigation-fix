@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
-"""
+# docstring 内に Windows のパス（.\tools\... など）を書くため raw 文字列にしている。
+# 通常の文字列だと \t がタブに化け、\l は不正なエスケープ警告になる。
+r"""
 FFLogs v2 API から「軽減前ダメージ(unmitigatedAmount)」付きの被弾タイムラインを取得する。
 
 使い方:
     pip install requests
 
-    # Windows (PowerShell)
-    $env:FFLOGS_CLIENT_ID="01a0c09f-162c-735f-87ca-bfc818e82ec"
+    # Windows (PowerShell) — 雛形をコピーして値を書き、読み込ませるのが楽
+    Copy-Item .env.example .env
+    . .\tools\load-env.ps1
+    python fflogs_unmitigated.py
+
+    # 直接指定する場合 (PowerShell)
+    $env:FFLOGS_CLIENT_ID="＜発行されたclient_id＞"
     $env:FFLOGS_CLIENT_SECRET="＜発行されたsecret＞"
     python fflogs_unmitigated.py
 
     # macOS / Linux
-    export FFLOGS_CLIENT_ID=01a0c09f-162c-735f-87ca-bfc818e82ec
+    export FFLOGS_CLIENT_ID=＜発行されたclient_id＞
     export FFLOGS_CLIENT_SECRET=＜発行されたsecret＞
     python3 fflogs_unmitigated.py
 
