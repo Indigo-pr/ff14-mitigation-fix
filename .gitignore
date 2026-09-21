@@ -1,0 +1,12 @@
+# FFLogs の認証情報は絶対にコミットしない（スクリプトプロパティに保存する運用）
+.env
+*.secret
+credentials*.json
+
+# clasp
+.clasp.json
+.clasprc.json
+
+# 作業ファイル
+*.csv
+__pycache__/
