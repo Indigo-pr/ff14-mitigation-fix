@@ -113,9 +113,24 @@ https://www.fflogs.com/reports/xxxxxxxxxxxx#fight=9
 apps-script/mitigation_fix.gs   本体
 apps-script/appsscript.json     clasp 用のマニフェスト
 tools/fflogs_unmitigated.py     FFLogsから素ダメージ付きCSVを吐く単体スクリプト（検証・調査用）
+tools/load-env.ps1              .env を環境変数に読み込む（Windows / PowerShell 用）
+.env.example                    調査用スクリプトが使う環境変数の雛形
 docs/findings.md                ログ解析で判明した事実（検証データ付き）
 docs/decisions.md               設計判断とその理由
+investigations/                 調査・検算の作業場（運用ルールは investigations/README.md）
 ```
+
+### 調査用スクリプトを動かす
+
+毎回キーを打ち直さなくて済むよう、`.env` に置いて読み込める。
+
+```powershell
+Copy-Item .env.example .env    # 初回だけ。値を書き込む
+. .\tools\load-env.ps1         # 先頭の "." が必須。無いと効かない
+python tools/fflogs_unmitigated.py 9
+```
+
+`.env` は `.gitignore` 済み。**Apps Script 本体はこれを使わない**（あちらはスクリプトプロパティ）。
 
 ### Apps Script をGitで管理する
 
