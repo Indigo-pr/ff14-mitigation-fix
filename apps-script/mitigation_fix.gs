@@ -1,5 +1,5 @@
 /**
- * 軽減表ジェネレーター 補正ツール  v1.3
+ * 軽減表ジェネレーター 補正ツール  v1.4
  * ------------------------------------------------------------------
  * ジェネレーターが生成した軽減表シートの Damage 列を、
  * FFLogs V2 API の素ダメージ(unmitigatedAmount)で検算・補正します。
@@ -10,8 +10,22 @@
  *   - 必ず「プレビュー → 選んで適用」の2段階。いきなり書き換えません
  *
  * 【導入】
- *   拡張機能 → Apps Script に貼り付けて保存 → シートを再読み込み
- *   メニューに「軽減表 補正」が出ます
+ *   1. 拡張機能 → Apps Script を開く
+ *   2. 左の「ファイル」で ＋ → スクリプト で “新しいファイル” を作り、これを貼って保存
+ *      （既存のファイルを上書きしないこと。ジェネレーター本体のコードが消えます）
+ *   3. 左の時計アイコン「トリガー」→「トリガーを追加」
+ *        実行する関数      : mfBuildMenu
+ *        イベントのソース  : スプレッドシートから
+ *        イベントの種類    : 起動時
+ *      → 保存して権限を承認
+ *   4. スプレッドシートを再読み込み
+ *      メニューに「軽減表 補正」が出ます（本家の【軽減表拡張機能】も並びます）
+ *
+ *   ※ onOpen という名前を使っていないのは、ジェネレーター本体の onOpen を
+ *      上書きしてしまい、本家のメニューが消えるためです。
+ *      同じ理由で、関数名と定数名は全て mf / MF_ を頭に付けて衝突を避けています。
+ *   ※ トリガーを登録しない場合は、エディタで mfBuildMenu を手動実行しても
+ *      メニューは出ます（そのシートを開いている間だけ有効）。
  *
  * 【使う順番】
  *   ① FFLogs認証を設定      … V2の client_id / client_secret を保存（初回だけ）
@@ -20,31 +34,31 @@
  * ------------------------------------------------------------------
  */
 
-var PREVIEW_SHEET = '_CORRECTION';
-var ROUND_UNIT = 1000;        // 採用値の切り上げ単位
-var TIME_TOLERANCE = 2.5;     // シート行とログを突き合わせる時の許容秒数
-var TANK_JOBS = ['Paladin', 'Warrior', 'DarkKnight', 'Gunbreaker'];
-var AA_NAMES = ['攻撃', 'オートアタック', 'attack', 'auto-attack', 'autoattack'];
+var MF_PREVIEW_SHEET = '_CORRECTION';
+var MF_ROUND_UNIT = 1000;        // 採用値の切り上げ単位
+var MF_TIME_TOLERANCE = 2.5;     // シート行とログを突き合わせる時の許容秒数
+var MF_TANK_JOBS = ['Paladin', 'Warrior', 'DarkKnight', 'Gunbreaker'];
+var MF_AA_NAMES = ['攻撃', 'オートアタック', 'attack', 'auto-attack', 'autoattack'];
 
 // 複数対象の技で、どの回の値を採用するか
 //   'fullest' = 対象人数が最も多かった回の最大値（既定。人が減った全滅間際の回を拾わない）
 //   'max'     = 全ての回を通じての最大値（最も安全側だが過大になりやすい）
-var PICK_MODE = 'fullest';
+var MF_PICK_MODE = 'fullest';
 
-function onOpen() {
+function mfBuildMenu() {
   SpreadsheetApp.getUi()
     .createMenu('軽減表 補正')
-    .addItem('① FFLogs認証を設定', 'setupCredentials')
-    .addItem('② 補正プレビューを作成', 'buildPreview')
-    .addItem('③ 選択した補正を適用', 'applyPreview')
+    .addItem('① FFLogs認証を設定', 'mfSetupCredentials')
+    .addItem('② 補正プレビューを作成', 'mfBuildPreview')
+    .addItem('③ 選択した補正を適用', 'mfApplyPreview')
     .addSeparator()
-    .addItem('認証情報を消す', 'clearCredentials')
+    .addItem('認証情報を消す', 'mfClearCredentials')
     .addToUi();
 }
 
 /* ============================== ① 認証 ============================== */
 
-function setupCredentials() {
+function mfSetupCredentials() {
   var ui = SpreadsheetApp.getUi();
   var a = ui.prompt('FFLogs V2 の client_id を入力', ui.ButtonSet.OK_CANCEL);
   if (a.getSelectedButton() !== ui.Button.OK) return;
@@ -56,20 +70,20 @@ function setupCredentials() {
   p.setProperty('FFLOGS_SECRET', b.getResponseText().trim());
 
   try {
-    getToken();
+    mfGetToken();
     ui.alert('認証に成功しました。②に進んでください。');
   } catch (e) {
     ui.alert('認証に失敗しました。\n\n' + e.message);
   }
 }
 
-function clearCredentials() {
+function mfClearCredentials() {
   PropertiesService.getScriptProperties().deleteProperty('FFLOGS_ID');
   PropertiesService.getScriptProperties().deleteProperty('FFLOGS_SECRET');
   SpreadsheetApp.getUi().alert('認証情報を削除しました。');
 }
 
-function getToken() {
+function mfGetToken() {
   var p = PropertiesService.getScriptProperties();
   var id = p.getProperty('FFLOGS_ID'), sec = p.getProperty('FFLOGS_SECRET');
   if (!id || !sec) throw new Error('先に「① FFLogs認証を設定」を実行してください。');
@@ -86,7 +100,7 @@ function getToken() {
   return JSON.parse(res.getContentText()).access_token;
 }
 
-function gql(token, query, variables) {
+function mfGql(token, query, variables) {
   var res = UrlFetchApp.fetch('https://www.fflogs.com/api/v2/client', {
     method: 'post',
     contentType: 'application/json',
@@ -104,12 +118,12 @@ function gql(token, query, variables) {
 
 /* ============================== ② プレビュー ============================== */
 
-function buildPreview() {
+function mfBuildPreview() {
   var ui = SpreadsheetApp.getUi();
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getActiveSheet();
 
-  var layout = detectLayout(sheet);
+  var layout = mfDetectLayout(sheet);
   if (!layout) {
     ui.alert('このシートは軽減表シートとして認識できませんでした。\n'
       + '補正したい軽減表シートを開いた状態で実行してください。\n\n現在のシート: ' + sheet.getName());
@@ -119,13 +133,13 @@ function buildPreview() {
   var r = ui.prompt('FFLogsのURL、またはレポートコードを入力\n（例: https://www.fflogs.com/reports/xxxx#fight=9）',
                     ui.ButtonSet.OK_CANCEL);
   if (r.getSelectedButton() !== ui.Button.OK) return;
-  var parsed = parseReportInput(r.getResponseText());
+  var parsed = mfParseReportInput(r.getResponseText());
   if (!parsed.code) { ui.alert('レポートコードを読み取れませんでした。'); return; }
 
-  var token = getToken();
+  var token = mfGetToken();
 
   if (!parsed.fight) {
-    var fights = fetchFights(token, parsed.code);
+    var fights = mfFetchFights(token, parsed.code);
     var list = fights.map(function (f) {
       return '  ' + f.id + ' : ' + f.name + ' (' + Math.round((f.endTime - f.startTime) / 1000) + '秒)';
     }).join('\n');
@@ -134,16 +148,16 @@ function buildPreview() {
     parsed.fight = parseInt(fr.getResponseText().trim(), 10);
   }
 
-  var data = collectFromLog(token, parsed.code, parsed.fight);
-  var abilities = classify(data.instances, data.tankIds);
-  var rows = matchToSheet(sheet, layout, abilities);
+  var data = mfCollectFromLog(token, parsed.code, parsed.fight);
+  var abilities = mfClassify(data.instances, data.tankIds);
+  var rows = mfMatchToSheet(sheet, layout, abilities);
 
-  writePreview(ss, sheet.getName(), rows);
-  ui.alert('プレビューを作成しました。\n\n「' + PREVIEW_SHEET + '」シートを確認し、\n'
+  mfWritePreview(ss, sheet.getName(), rows);
+  ui.alert('プレビューを作成しました。\n\n「' + MF_PREVIEW_SHEET + '」シートを確認し、\n'
     + '反映したい行の「適用」にチェックを入れてから ③ を実行してください。');
 }
 
-function parseReportInput(s) {
+function mfParseReportInput(s) {
   s = String(s || '').trim();
   var code = null, fight = null;
   var m = s.match(/reports\/([A-Za-z0-9]{10,})/);
@@ -153,18 +167,18 @@ function parseReportInput(s) {
   return { code: code, fight: fight };
 }
 
-function fetchFights(token, code) {
+function mfFetchFights(token, code) {
   var q = 'query($code:String!){reportData{report(code:$code){fights{id name startTime endTime}}}}';
-  return gql(token, q, { code: code }).reportData.report.fights;
+  return mfGql(token, q, { code: code }).reportData.report.fights;
 }
 
 /** FFLogsから被弾イベントを取り、技×インスタンス単位にまとめる */
-function collectFromLog(token, code, fightId) {
+function mfCollectFromLog(token, code, fightId) {
   var metaQ = 'query($code:String!){reportData{report(code:$code){'
     + 'fights{id name startTime endTime}'
     + 'masterData{actors{id name type subType}}'
     + '}}}';
-  var meta = gql(token, metaQ, { code: code }).reportData.report;
+  var meta = mfGql(token, metaQ, { code: code }).reportData.report;
 
   var fight = null;
   for (var i = 0; i < meta.fights.length; i++) if (meta.fights[i].id === fightId) fight = meta.fights[i];
@@ -173,7 +187,7 @@ function collectFromLog(token, code, fightId) {
   var actors = {}, tankIds = {};
   meta.masterData.actors.forEach(function (a) {
     actors[a.id] = a;
-    if (a.type === 'Player' && TANK_JOBS.indexOf(a.subType) >= 0) tankIds[a.id] = true;
+    if (a.type === 'Player' && MF_TANK_JOBS.indexOf(a.subType) >= 0) tankIds[a.id] = true;
   });
 
   // 日本語名 / 英語名 の両方を用意（シートの技名とどちらでも照合できるように）
@@ -182,7 +196,7 @@ function collectFromLog(token, code, fightId) {
     try {
       var q = 'query($code:String!,$tr:Boolean!){reportData{report(code:$code){'
         + 'masterData(translate:$tr){abilities{gameID name}}}}}';
-      var ab = gql(token, q, { code: code, tr: tr }).reportData.report.masterData.abilities;
+      var ab = mfGql(token, q, { code: code, tr: tr }).reportData.report.masterData.abilities;
       var m = {};
       ab.forEach(function (x) { m[x.gameID] = x.name; });
       nameMaps.push(m);
@@ -195,7 +209,7 @@ function collectFromLog(token, code, fightId) {
 
   var events = [], cursor = fight.startTime, end = fight.endTime, guard = 0;
   while (cursor !== null && cursor < end && guard++ < 40) {
-    var page = gql(token, evQ, { code: code, fight: fightId, start: cursor, end: end })
+    var page = mfGql(token, evQ, { code: code, fight: fightId, start: cursor, end: end })
       .reportData.report.events;
     if (page.data) events = events.concat(page.data);
     var nxt = page.nextPageTimestamp;
@@ -255,7 +269,7 @@ function collectFromLog(token, code, fightId) {
  *    単体     … 常に対象が1人
  *    複数対象 … それ以外（頭割りか全体かは判定しない。メモの内訳を見て人が判断する）
  */
-function classify(instances, tankIds) {
+function mfClassify(instances, tankIds) {
   // 同名でも発動元が違えば別の技として扱う（ボス本体と雑魚が同じ技名を使うことがある）
   var byName = {};
   instances.forEach(function (ins) {
@@ -288,19 +302,19 @@ function classify(instances, tankIds) {
 
     var gaps = [];
     for (var gi = 1; gi < list.length; gi++) gaps.push(list[gi].t - list[gi - 1].t);
-    var medGap = gaps.length ? median(gaps) : null;
+    var medGap = gaps.length ? mfMedian(gaps) : null;
 
     var kind;
-    if (isAutoAttackName(name)) kind = '通常攻撃';
+    if (mfIsAutoAttackName(name)) kind = '通常攻撃';
     else if (maxN <= 1) kind = '単体';
     else kind = '複数対象';
 
     var pick, how;
     if (kind === '通常攻撃') {
       // AAはブロック/受け流しで大きく振れるので最大値ではなく中央値
-      pick = median(nonTankVals.length ? nonTankVals : tankVals);
+      pick = mfMedian(nonTankVals.length ? nonTankVals : tankVals);
       how = '中央値';
-    } else if (kind === '複数対象' && PICK_MODE === 'fullest') {
+    } else if (kind === '複数対象' && MF_PICK_MODE === 'fullest') {
       var fullest = null;
       detail.forEach(function (d) { if (!fullest || d.n > fullest.n || (d.n === fullest.n && d.max > fullest.max)) fullest = d; });
       pick = fullest.max;
@@ -315,7 +329,7 @@ function classify(instances, tankIds) {
       name: name,
       sourceName: list[0].sourceName,
       kind: kind,
-      value: ceilTo(pick, ROUND_UNIT),
+      value: mfCeilTo(pick, MF_ROUND_UNIT),
       maxN: maxN,
       samples: nonTankVals.length + tankVals.length,
       medGap: medGap,
@@ -328,24 +342,24 @@ function classify(instances, tankIds) {
   return result;
 }
 
-function isAutoAttackName(n) {
+function mfIsAutoAttackName(n) {
   var s = String(n || '').trim();
-  if (AA_NAMES.indexOf(s) >= 0) return true;
-  return AA_NAMES.indexOf(s.toLowerCase()) >= 0;
+  if (MF_AA_NAMES.indexOf(s) >= 0) return true;
+  return MF_AA_NAMES.indexOf(s.toLowerCase()) >= 0;
 }
 
-function median(arr) {
+function mfMedian(arr) {
   if (!arr || !arr.length) return 0;
   var a = arr.slice().sort(function (x, y) { return x - y; });
   var m = Math.floor(a.length / 2);
   return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
 }
 
-function ceilTo(v, unit) { return Math.ceil(v / unit) * unit; }
+function mfCeilTo(v, unit) { return Math.ceil(v / unit) * unit; }
 
 /* ============================== シート解析 ============================== */
 
-function detectLayout(sheet) {
+function mfDetectLayout(sheet) {
   if (sheet.getMaxRows() < 27 || sheet.getMaxColumns() < 10) return null;
   var scan = sheet.getRange(1, 1, Math.min(30, sheet.getMaxRows()), Math.min(14, sheet.getMaxColumns()))
                   .getDisplayValues();
@@ -381,7 +395,7 @@ function detectLayout(sheet) {
   };
 }
 
-function parseTimeToSec(s) {
+function mfParseTimeToSec(s) {
   s = String(s || '').trim();
   if (!s) return null;
   var neg = s.charAt(0) === '-';
@@ -395,7 +409,7 @@ function parseTimeToSec(s) {
 }
 
 /** シートの各行とログのインスタンスを突き合わせる */
-function matchToSheet(sheet, layout, abilities) {
+function mfMatchToSheet(sheet, layout, abilities) {
   var lastRow = sheet.getLastRow();
   var n = lastRow - layout.dataStart + 1;
   if (n <= 0) return [];
@@ -415,8 +429,8 @@ function matchToSheet(sheet, layout, abilities) {
   var out = [];
   for (var i = 0; i < n; i++) {
     var rowNum = layout.dataStart + i;
-    var tSec = parseTimeToSec(vals[i][layout.colTotalTime - 1]);
-    if (tSec === null) tSec = parseTimeToSec(vals[i][layout.colTime - 1]);
+    var tSec = mfParseTimeToSec(vals[i][layout.colTotalTime - 1]);
+    if (tSec === null) tSec = mfParseTimeToSec(vals[i][layout.colTime - 1]);
     if (tSec === null || tSec < 0) continue;
 
     var action = String(vals[i][layout.colAction - 1] || '').trim();
@@ -425,11 +439,11 @@ function matchToSheet(sheet, layout, abilities) {
     if (!action) continue;
 
     // 同時刻の候補
-    var cands = flat.filter(function (f) { return Math.abs(f.t - tSec) <= TIME_TOLERANCE; });
+    var cands = flat.filter(function (f) { return Math.abs(f.t - tSec) <= MF_TIME_TOLERANCE; });
     if (!cands.length) continue;
 
     // ① 技名が一致する候補を最優先、② 次にダメージ値の近さ
-    var bare = stripTag(action);
+    var bare = mfStripTag(action);
     var named = cands.filter(function (c) { return c.name === bare; });
     var pool = named.length ? named : cands;
 
@@ -448,9 +462,9 @@ function matchToSheet(sheet, layout, abilities) {
     if (!info.value) continue;
 
     // Action列は技名だけにする（種別はセルのメモとプレビューに出す）
-    var newAction = stripTag(action);
+    var newAction = mfStripTag(action);
 
-    var note = buildNote(info, curDmg);
+    var note = mfBuildNote(info, curDmg);
     var changed = (curDmg === null) || (Math.abs(curDmg - info.value) / Math.max(info.value, 1) > 0.01)
                   || (action !== newAction);
 
@@ -466,44 +480,44 @@ function matchToSheet(sheet, layout, abilities) {
   return out;
 }
 
-function stripTag(s) { return String(s).replace(/【[^】]*】\s*$/, '').trim(); }
+function mfStripTag(s) { return String(s).replace(/【[^】]*】\s*$/, '').trim(); }
 
-function buildNote(info, curDmg) {
+function mfBuildNote(info, curDmg) {
   var lines = [];
   lines.push('種別: ' + info.kind + (info.sourceName ? '   発動元: ' + info.sourceName : ''));
-  lines.push('実測: ' + info.samples + '件 / 最大 ' + fmt(info.rawMax)
+  lines.push('実測: ' + info.samples + '件 / 最大 ' + mfFmt(info.rawMax)
     + (info.medGap !== null && info.medGap !== undefined ? ' / 発動間隔 約' + info.medGap + '秒' : ''));
   lines.push('採用: ' + info.pickedBy + ' → 1,000単位で切り上げ');
   if (info.detail && info.detail.length) {
     if (info.kind === '通常攻撃') {
       // AAは回数が多いので一覧ではなく散らばりだけ出す
       var vs = info.detail.map(function (x) { return x.max; });
-      lines.push('内訳: ' + info.detail.length + '回 / 最小 ' + fmt(Math.min.apply(null, vs))
-        + ' / 中央 ' + fmt(median(vs)) + ' / 最大 ' + fmt(Math.max.apply(null, vs)));
+      lines.push('内訳: ' + info.detail.length + '回 / 最小 ' + mfFmt(Math.min.apply(null, vs))
+        + ' / 中央 ' + mfFmt(mfMedian(vs)) + ' / 最大 ' + mfFmt(Math.max.apply(null, vs)));
     } else {
       var d = info.detail.slice(0, 12).map(function (x) {
-        return mmss(x.t) + ' ' + x.n + '人 ' + fmt(x.max);
+        return mfMmss(x.t) + ' ' + x.n + '人 ' + mfFmt(x.max);
       });
       lines.push('内訳(時刻/対象数/最大): ' + d.join('  |  ')
         + (info.detail.length > 12 ? '  … 他' + (info.detail.length - 12) + '回' : ''));
     }
   }
-  if (curDmg) lines.push('補正前: ' + fmt(curDmg));
+  if (curDmg) lines.push('補正前: ' + mfFmt(curDmg));
   return lines.join('\n');
 }
 
-function mmss(sec) {
+function mfMmss(sec) {
   var m = Math.floor(sec / 60), s2 = sec % 60;
   return m + ':' + (s2 < 10 ? '0' : '') + s2;
 }
 
-function fmt(v) { return Number(v).toLocaleString('en-US'); }
+function mfFmt(v) { return Number(v).toLocaleString('en-US'); }
 
 /* ============================== プレビュー出力 ============================== */
 
-function writePreview(ss, targetName, rows) {
-  var sh = ss.getSheetByName(PREVIEW_SHEET);
-  if (sh) sh.clear(); else sh = ss.insertSheet(PREVIEW_SHEET);
+function mfWritePreview(ss, targetName, rows) {
+  var sh = ss.getSheetByName(MF_PREVIEW_SHEET);
+  if (sh) sh.clear(); else sh = ss.insertSheet(MF_PREVIEW_SHEET);
 
   var header = ['適用', '対象シート', '行', '時刻', '技名', '→ 新しい技名',
                 '現在のDamage', '→ 新Damage', '差', '種別', '最大対象数', 'サンプル', 'メモ内容'];
@@ -533,10 +547,10 @@ function writePreview(ss, targetName, rows) {
 
 /* ============================== ③ 適用 ============================== */
 
-function applyPreview() {
+function mfApplyPreview() {
   var ui = SpreadsheetApp.getUi();
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sh = ss.getSheetByName(PREVIEW_SHEET);
+  var sh = ss.getSheetByName(MF_PREVIEW_SHEET);
   if (!sh) { ui.alert('先に「② 補正プレビューを作成」を実行してください。'); return; }
 
   var last = sh.getLastRow();
@@ -552,7 +566,7 @@ function applyPreview() {
 
   var target = ss.getSheetByName(picked[0][1]);
   if (!target) { ui.alert('対象シートが見つかりません: ' + picked[0][1]); return; }
-  var layout = detectLayout(target);
+  var layout = mfDetectLayout(target);
   if (!layout) { ui.alert('対象シートの構造を認識できませんでした。'); return; }
 
   var applied = 0;
