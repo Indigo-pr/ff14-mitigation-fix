@@ -1,4 +1,4 @@
-# FFLogs の認証情報は絶対にコミットしない（スクリプトプロパティに保存する運用）
+# 認証情報は絶対にコミットしない（スクリプトプロパティに保存する運用）
 .env
 *.secret
 credentials*.json
@@ -7,6 +7,13 @@ credentials*.json
 .clasp.json
 .clasprc.json
 
-# 作業ファイル
+# 作業中の中間ファイル
 *.csv
 __pycache__/
+
+# ただし investigations/ 配下の小さいデータは「証拠」として残す
+!investigations/**/data/*.csv
+
+# ACTの生ログは大きすぎるので入れない（再取得できる）
+*.log
+Network_*.log
